@@ -1,0 +1,12 @@
+node_modules/
+*.log
+*.part
+*.part.*
+# Your projects, media and export scratch (created on first start)
+workspace/
+# Written by npm run smoke / npm run screenshots
+screenshots/
+# Crash-recovery drafts and browser profiles left by an interrupted run
+*.draft.json
+.chrome-profile*/
+*-chrome/

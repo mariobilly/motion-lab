@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Motion Lab — render harness</title>
+<style>
+  html, body { margin: 0; background: #101014; color: #cfd2e0; font: 13px/1.5 "Segoe UI", system-ui, sans-serif; }
+  #bar { display: flex; gap: 10px; align-items: center; padding: 8px 12px; background: #17171f; border-bottom: 1px solid #26263a; font-size: 12px; }
+  #bar strong { color: #5ce1ff; }
+  #stageWrap { padding: 12px; display: inline-block; }
+  #stage { display: block; background: #000; box-shadow: 0 6px 30px rgba(0,0,0,.6); }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <strong>Motion Lab</strong>
+    <span>render harness</span>
+    <span id="status">Booting…</span>
+  </div>
+  <div id="stageWrap"><canvas id="stage" width="640" height="360"></canvas></div>
+  <script type="module" src="/harness.js"></script>
+</body>
+</html>

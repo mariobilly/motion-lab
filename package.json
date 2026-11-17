@@ -1,0 +1,36 @@
+{
+  "name": "motion-lab",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Motion Lab - a desktop-first creative studio for turning photos, videos and music into layered, animated visual art.",
+  "author": "Mario Schebly",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.11"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js --port 5273 --open",
+    "sample-media": "node scripts/make-sample-media.mjs",
+    "starters": "node scripts/make-starters.mjs",
+    "reset": "node scripts/reset-workspace.mjs",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify:render": "node scripts/verify-render.mjs",
+    "verify:starters": "node scripts/verify-starters.mjs",
+    "verify": "npm run verify:render && npm run verify:starters",
+    "smoke": "node scripts/smoke.mjs",
+    "screenshots": "node scripts/screenshots.mjs",
+    "looks": "node scripts/generate-looks.mjs",
+    "looks:compare": "node scripts/make-comparisons.mjs",
+    "looks:verify": "node scripts/verify-looks.mjs",
+    "looks:report": "node scripts/report-looks.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
