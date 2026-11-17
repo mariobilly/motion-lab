@@ -413,8 +413,10 @@ export function buildInspector({ store, media, preview, api }) {
     }
     return panel;
   }
+  // Left-aligned: the buttons sit near the inspector's left edge, so a right-aligned menu would open outside the
+  // panel, where it is clipped and the preview takes the clicks.
   const menuButton = (/** @type {string} */ label, /** @type {string} */ title, /** @type {(close:()=>void)=>HTMLElement} */ build) =>
-    menu({ trigger: button(label, 'btn btn--tiny', { title }), build, align: 'right' }).root;
+    menu({ trigger: button(label, 'btn btn--tiny', { title }), build }).root;
   /** @param {Clip} clip */
   const maskMenu = (clip) => menuButton('+ Mask', 'Add a mask to this clip', (close) => menuPanel(close, [
     { group: 'Add mask' },
@@ -1248,12 +1250,21 @@ export function buildInspector({ store, media, preview, api }) {
       kv('File', asset?.fileName ?? '—'),
     ];
     if (asset?.status && asset.status !== 'ok') rows.push(hint('warn', `This asset reports "${asset.status}"${asset.statusDetail ? `: ${asset.statusDetail}` : '.'}`));
-    if (!clip.assetId) rows.push(hint('warn', 'This clip has no asset id, so it cannot render. Replace its file to relink it.'));
-    const fileInput = el('input', { type: 'file', class: 'hidden', accept: 'image/*,video/*,audio/*' });
+    if (!clip.assetId) rows.push(hint('warn', 'This media slot is empty. Choose a photo or video, or drop one on the clip in the timeline: the clip keeps its timing, effects and keyframes.'));
+    const fileInput = el('input', { type: 'file', class: 'hidden', accept: clip.assetId ? 'image/*,video/*,audio/*' : 'image/*,video/*' });
     fileInput.addEventListener('change', async () => {
       const file = fileInput.files?.[0];
       if (!file) return;
-      if (!clip.assetId) { store.notify('warn', 'There is no asset to replace on this clip.'); return; }
+      if (!clip.assetId) {
+        // An empty slot: import the file and put it in the slot.
+        try {
+          const [asset] = await media.importFiles([file]);
+          if (!asset || !store.fillMediaSlot(clip.id, asset)) store.notify('warn', 'Only a photo or a video can go in this slot.');
+        } finally {
+          fileInput.value = '';
+        }
+        return;
+      }
       try {
         await api.replaceAssetFile(clip.assetId, file);
         store.notify('ok', `Replaced the file behind "${asset?.name ?? clip.assetId}". Every clip using it now points at the new media.`, { title: 'Media' });
@@ -1266,9 +1277,9 @@ export function buildInspector({ store, media, preview, api }) {
       }
     });
     rows.push(el('div', { class: 'chip-row' }, [
-      button('Replace file', 'btn btn--tiny', {
-        title: 'Swap the media behind this clip without touching the timeline',
-        disabled: !clip.assetId || typeof api?.replaceAssetFile !== 'function',
+      button(clip.assetId ? 'Replace file' : 'Choose file...', 'btn btn--tiny', {
+        title: clip.assetId ? 'Swap the media behind this clip without touching the timeline' : 'Put a photo or video in this empty slot',
+        disabled: clip.assetId ? typeof api?.replaceAssetFile !== 'function' : typeof media?.importFiles !== 'function',
         onclick: () => fileInput.click(),
       }),
       fileInput,

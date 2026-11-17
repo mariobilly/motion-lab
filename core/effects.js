@@ -471,7 +471,7 @@ export function passPaletteMap(src, dst, ctx, params) {
  */
 export function passBloom(src, dst, ctx, params) {
   const { width, height, scale } = ctx;
-  const radius = Math.max(1, Math.round(params.radius / Math.max(0.05, scale)));
+  const radius = Math.max(1, Math.round(params.radius * scale));
   const factor = Math.max(1, Math.round(radius / 4));
   const small = ctx.scratch(factor);
   const sw = Math.max(1, Math.floor(width / factor));
@@ -585,7 +585,7 @@ function boxBlur(data, width, height, radius) {
 export function passGrain(src, dst, ctx, params) {
   const { width, height, scale, seed } = ctx;
   const sizeUnits = Math.max(0.35, params.size);
-  const cell = Math.max(0.5, sizeUnits / Math.max(0.05, scale));
+  const cell = Math.max(0.5, sizeUnits * scale);
   const amount = (params.amount / 100) * 46;
   const animate = params.animate ?? 0;
   // A frame-varying seed offset keeps the grain field stable while unrelated
@@ -625,7 +625,7 @@ export function passGrain(src, dst, ctx, params) {
  */
 export function passPaper(src, dst, ctx, params) {
   const { width, height, scale, seed } = ctx;
-  const cell = Math.max(0.8, params.scale / Math.max(0.05, scale));
+  const cell = Math.max(0.8, params.scale * scale);
   const amount = (params.intensity / 100) * 40;
   for (let y = 0; y < height; y += 1) {
     const v = (y + 0.5) / cell;
@@ -657,7 +657,7 @@ export function passScratches(src, dst, ctx, params) {
   const count = Math.round(params.count);
   if (count <= 0 || params.opacity <= 0) return;
   const lengthFraction = params.length / 100;
-  const lineWidth = Math.max(1, Math.round((params.width * scale) / Math.max(0.05, scale)));
+  const lineWidth = Math.max(1, Math.round(params.width * scale));
   const baseAlpha = params.opacity / 100;
   const brightness = params.bright ? 235 : 12;
 
@@ -728,7 +728,7 @@ export function passHalftone(src, dst, ctx, params) {
   const { width, height, scale } = ctx;
   const ink = hexToRgb(params.ink);
   const paper = hexToRgb(params.paper);
-  const spacing = Math.max(1.2, params.spacing / Math.max(0.05, scale));
+  const spacing = Math.max(1.2, params.spacing * scale);
   const maxRadius = spacing * 0.5 * (params.dotSize / 100) * Math.SQRT2;
   const rad = (params.angle * Math.PI) / 180;
   const cos = Math.cos(rad);
@@ -845,7 +845,7 @@ export function passEdges(src, dst, ctx, params) {
  */
 export function passPixelate(src, dst, ctx, params) {
   const { width, height, scale } = ctx;
-  const block = Math.max(1, params.blockSize / Math.max(0.05, scale));
+  const block = Math.max(1, params.blockSize * scale);
   if (block <= 1.0001) {
     dst.set(src);
     return;
@@ -903,12 +903,12 @@ export function passPixelate(src, dst, ctx, params) {
  */
 export function passWave(src, dst, ctx, params) {
   const { width, height, scale } = ctx;
-  const amplitude = params.amplitude / Math.max(0.05, scale);
+  const amplitude = params.amplitude * scale;
   if (!amplitude) {
     dst.set(src);
     return;
   }
-  const wavelength = Math.max(2, params.wavelength / Math.max(0.05, scale));
+  const wavelength = Math.max(2, params.wavelength * scale);
   const phase = (params.phase * Math.PI) / 180 + ctx.time * (params.animate ?? 0) * Math.PI;
   const sample = new Float32Array(4);
   const kind = params.waveKind ?? 'sine';
@@ -947,7 +947,7 @@ export function passWave(src, dst, ctx, params) {
  */
 export function passRgbOffset(src, dst, ctx, params) {
   const { width, height, scale } = ctx;
-  const distance = params.distance / Math.max(0.05, scale);
+  const distance = params.distance * scale;
   const angle = ((params.angle + (params.animate ?? 0) * ctx.time * 60) * Math.PI) / 180;
   const dx = Math.cos(angle) * distance;
   const dy = Math.sin(angle) * distance;
@@ -1025,7 +1025,7 @@ export function passGlitch(src, dst, ctx, params) {
   // timeline: seeking to a frame reproduces that frame's glitch exactly.
   const tick = Math.floor(ctx.time * Math.max(0.5, params.rate));
   const maxShift = amount * width * 0.22;
-  const block = Math.max(2, params.blockSize / Math.max(0.05, scale));
+  const block = Math.max(2, params.blockSize * scale);
   const sample = new Float32Array(4);
 
   for (let s = 0; s < slices; s += 1) {
@@ -1077,7 +1077,7 @@ export function passGlitch(src, dst, ctx, params) {
  */
 export function passAnimatedNoise(src, dst, ctx, params) {
   const { width, height, scale, seed } = ctx;
-  const cell = Math.max(0.5, params.scale / Math.max(0.05, scale));
+  const cell = Math.max(0.5, params.scale * scale);
   const amount = (params.amount / 100) * 255;
   const t = ctx.time * (params.speed ?? 1);
   const kind = params.noiseKind ?? 'film';

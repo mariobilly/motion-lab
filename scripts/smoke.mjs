@@ -582,8 +582,122 @@ async function main() {
       await page.captureClip({ x: 0, y: 0, width: 1800, height: 1080 }).then((buffer) => fs.writeFile(join(SHOTS, 'smoke-05-exported.png'), buffer));
     });
 
+    /* ---------------- video in the preview ---------------- */
+    await stage('8. A video clip draws while the preview plays, pauses and scrubs', async () => {
+      // Leave nothing in the composition but one video clip, so a black preview
+      // means the video was not drawn.
+      await page.evaluate(`(async () => {
+        const { store, preview } = window.__motionLab;
+        const { defaultClip } = await import('/core/schema.js');
+        const assets = [...store.assets.values()];
+        const video = assets.find((asset) => asset.fileName === 'clip-neon.mp4') ?? assets.find((asset) => asset.kind === 'video');
+        const track = store.doc.tracks.find((entry) => entry.kind === 'visual');
+        store.edit('Playback check', () => {
+          store.doc.mappings = [];
+          store.doc.clips = [defaultClip({ name: 'Video', kind: 'video', assetId: video.id, trackId: track.id, start: 0, duration: 6 })];
+        });
+        preview.invalidate(true);
+      })()`, { awaitPromise: true, timeoutMs: 60000 });
+      const brightness = () => page.evaluate(`(() => {
+        const canvas = document.querySelector('.preview-canvas');
+        const probe = document.createElement('canvas'); probe.width = 64; probe.height = 36;
+        const ctx = probe.getContext('2d'); ctx.drawImage(canvas, 0, 0, 64, 36);
+        const data = ctx.getImageData(0, 0, 64, 36).data; let sum = 0;
+        for (let i = 0; i < data.length; i += 4) sum += (data[i] + data[i + 1] + data[i + 2]) / 3;
+        return sum / (data.length / 4);
+      })()`);
+      const settle = async () => {
+        for (let attempt = 0; attempt < 40; attempt += 1) {
+          if ((await brightness()) > 20) break;
+          await sleep(150);
+        }
+        return brightness();
+      };
+      // The first frame of a video that has sat idle can take the browser a moment.
+      await page.evaluate('window.__motionLab.preview.seek(0.5)');
+      await settle();
+
+      await page.evaluate('window.__motionLab.preview.play()');
+      const samples = [];
+      for (let index = 0; index < 8; index += 1) {
+        await sleep(300);
+        samples.push(await brightness());
+      }
+      await page.evaluate('window.__motionLab.preview.pause()');
+      const lit = samples.filter((value) => value > 20).length;
+      check('the video draws in every sample while playing', lit === samples.length, samples.map((value) => value.toFixed(0)).join(' '));
+      await sleep(800);
+      const paused = await brightness();
+      check('the video is still drawn after pausing', paused > 20, `brightness ${paused.toFixed(1)}`);
+
+      await page.evaluate('window.__motionLab.preview.seek(4.2)');
+      const scrubbed = await settle();
+      const time = await page.evaluate('window.__motionLab.store.playback.time');
+      check('scrubbing shows the video at the new time', scrubbed > 20 && Math.abs(time - 4.2) < 0.05, `brightness ${scrubbed.toFixed(1)} at ${time.toFixed(2)}s`);
+    });
+
+    /* ---------------- proportions in the preview ---------------- */
+    await stage('9. Photos and videos keep their proportions in the preview', async () => {
+      // The portrait composition holds one clip at a time: a 1600x2000 photo, then a
+      // 1280x720 video. The preview must match the source cover-fitted (its own
+      // proportions, filling the frame, centred), not stretched to the frame.
+      const fit = async (fileName, time) => JSON.parse(String(await page.evaluate(`(async () => {
+        const { store, preview } = window.__motionLab;
+        const { defaultClip } = await import('/core/schema.js');
+        const asset = [...store.assets.values()].find((entry) => entry.fileName === '${fileName}');
+        const track = store.doc.tracks.find((entry) => entry.kind === 'visual');
+        store.edit('Proportion check', () => {
+          store.doc.mappings = [];
+          store.doc.clips = [defaultClip({ name: 'Fit', kind: asset.kind, assetId: asset.id, trackId: track.id, start: 0, duration: 6 })];
+        });
+        preview.seek(${time});
+        const url = '/api/assets/' + encodeURIComponent(asset.id) + '/file';
+        let source;
+        if (asset.kind === 'video') {
+          source = document.createElement('video');
+          source.muted = true;
+          source.src = url;
+          await new Promise((resolve) => { source.onloadeddata = resolve; });
+          source.currentTime = ${time};
+          await new Promise((resolve) => { source.onseeked = resolve; });
+        } else {
+          source = new Image();
+          source.src = url;
+          await source.decode();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const sw = source.videoWidth || source.naturalWidth;
+        const sh = source.videoHeight || source.naturalHeight;
+        const canvas = document.querySelector('.preview-canvas');
+        const W = 48;
+        const H = Math.round(W * canvas.height / canvas.width);
+        const pixels = (draw) => {
+          const probe = document.createElement('canvas');
+          probe.width = W; probe.height = H;
+          const ctx = probe.getContext('2d');
+          ctx.imageSmoothingQuality = 'high';
+          draw(ctx);
+          return ctx.getImageData(0, 0, W, H).data;
+        };
+        const shown = pixels((ctx) => ctx.drawImage(canvas, 0, 0, W, H));
+        const s = Math.max(W / sw, H / sh);
+        const cover = pixels((ctx) => ctx.drawImage(source, (sw - W / s) / 2, (sh - H / s) / 2, W / s, H / s, 0, 0, W, H));
+        const stretch = pixels((ctx) => ctx.drawImage(source, 0, 0, W, H));
+        const diff = (a, b) => {
+          let total = 0;
+          for (let i = 0; i < a.length; i += 4) total += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+          return total / (a.length / 4 * 3);
+        };
+        return JSON.stringify({ cover: diff(shown, cover), stretch: diff(shown, stretch) });
+      })()`, { awaitPromise: true, timeoutMs: 60000 })));
+      const photo = await fit('photo-dusk.png', 1);
+      check('a photo of another shape is cover-fitted in the preview', photo.cover < 12 && photo.cover * 2 < photo.stretch, `cover ${photo.cover.toFixed(1)}, stretched ${photo.stretch.toFixed(1)}`);
+      const video = await fit('clip-harbour.mp4', 2);
+      check('a video of another shape is cover-fitted in the preview', video.cover < 12 && video.cover * 2 < video.stretch, `cover ${video.cover.toFixed(1)}, stretched ${video.stretch.toFixed(1)}`);
+    });
+
     /* ---------------- console cleanliness ---------------- */
-    await stage('8. No console errors', async () => {
+    await stage('10. No console errors', async () => {
       const errors = page.consoleErrors.filter((line) => !/favicon/i.test(line));
       check('the browser reported no errors or exceptions', errors.length === 0, errors.slice(0, 4).join(' | '));
       void consoleErrors;

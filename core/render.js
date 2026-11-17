@@ -8,11 +8,11 @@
  *
  * Resolution independence
  * -----------------------
- * `RenderContext.deviceScale` is composition pixels per device pixel: 1 for a
+ * `RenderContext.deviceScale` is device pixels per composition pixel: 1 for a
  * full-resolution render, 0.25 for a quarter-resolution preview. Every length
  * that describes *artwork* (grain size, halftone spacing, stroke widths, mask
- * feather) is divided by that scale, so it covers the same fraction of the
- * picture at any preview quality. Composition timing never depends on it.
+ * feather) is multiplied by that scale, so it covers the same fraction of the
+ * picture at any preview quality or export size. Composition timing never depends on it.
  *
  * Draw order within a clip
  * ------------------------
@@ -542,7 +542,13 @@ function drawSource(clip, render, time) {
   const { ctx } = render.scratch.acquire(3, deviceWidth, deviceHeight);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(image, 0, 0, meta.width, meta.height, 0, 0, deviceWidth, deviceHeight);
+  ctx.clearRect(0, 0, deviceWidth, deviceHeight);
+  // Cover fit: the photo or video keeps its own proportions and fills the frame,
+  // centred, instead of being stretched to the composition's shape.
+  const cover = Math.max(deviceWidth / meta.width, deviceHeight / meta.height);
+  const shownWidth = deviceWidth / cover;
+  const shownHeight = deviceHeight / cover;
+  ctx.drawImage(image, (meta.width - shownWidth) / 2, (meta.height - shownHeight) / 2, shownWidth, shownHeight, 0, 0, deviceWidth, deviceHeight);
   return {
     canvas: ctx.canvas,
     ctx,

@@ -784,6 +784,47 @@ export function clipSourceTime(clip, time) {
 }
 
 /**
+ * The span of source time a media asset must cover to render the timeline range
+ * [from, to]: every clip that uses the asset, including clips inside nested
+ * compositions, maps the part of the range where it is visible to its own source
+ * time (trim, reverse and playback rate included). An export extracts video
+ * frames for exactly this span. Returns null when no clip shows the asset there.
+ * @param {ProjectDoc} doc
+ * @param {string} assetId
+ * @param {number} from
+ * @param {number} to
+ * @returns {{start:number, end:number}|null}
+ */
+export function assetSourceSpan(doc, assetId, from, to) {
+  let start = Infinity;
+  let end = -Infinity;
+  /** @param {Clip[]} clips @param {number} a @param {number} b @param {number} depth */
+  const visit = (clips, a, b, depth) => {
+    for (const clip of clips) {
+      const lo = Math.max(a, clip.start);
+      const hi = Math.min(b, clip.start + clip.duration);
+      if (hi < lo) continue;
+      const rate = clip.playbackRate && clip.playbackRate > 0 ? clip.playbackRate : 1;
+      if (clip.kind === 'nested') {
+        // The same local-time mapping the renderer uses for a nested composition.
+        const nested = (doc.compositions ?? []).find((entry) => entry.id === clip.compositionId);
+        if (nested && depth < 8) visit(nested.clips, (lo - clip.start) * rate + clip.inPoint, (hi - clip.start) * rate + clip.inPoint, depth + 1);
+        continue;
+      }
+      if (clip.assetId !== assetId) continue;
+      for (const time of [lo, hi]) {
+        const local = time - clip.start;
+        const source = clip.inPoint + (clip.reverse ? clip.duration - local : local) * rate;
+        start = Math.min(start, source);
+        end = Math.max(end, source);
+      }
+    }
+  };
+  visit(doc.clips, from, to, 0);
+  return Number.isFinite(start) ? { start: Math.max(0, start), end: Math.max(0, end) } : null;
+}
+
+/**
  * @param {Clip} clip
  * @param {number} time
  * @returns {number} 0..1 audio fade envelope

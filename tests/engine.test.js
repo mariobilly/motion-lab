@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  PROJECT_VERSION, clipSourceTime, createProject, defaultClip, defaultGraphic, defaultMapping,
+  PROJECT_VERSION, assetSourceSpan, clipSourceTime, createProject, defaultClip, defaultGraphic, defaultMapping,
   defaultTextStyle, formatTimecode, neutralTransform, snapToFrame, timeToFrame, usedAssetIds, uid,
 } from '../core/schema.js';
 import { normalizeProject, validateProject } from '../core/document.js';
@@ -353,6 +353,28 @@ describe('project format', () => {
     expect(clipSourceTime(clip, 3)).toBeCloseTo(3, 6);
     expect(clipSourceTime(clip, 99)).toBeNull();
   });
+
+  it('finds the source span an export needs from each clip, not from the timeline range', () => {
+    const doc = createProject({ name: 'Span' }, { width: 1080, height: 1920, fps: 30, duration: 20 });
+    const track = doc.tracks[0].id;
+    // A clip trimmed to start 8 s into its file: exporting 0-3 s needs source 8-11 s.
+    doc.clips.push(defaultClip({ kind: 'video', assetId: 'a', trackId: track, start: 0, duration: 8, inPoint: 8 }));
+    expect(assetSourceSpan(doc, 'a', 0, 3)).toEqual({ start: 8, end: 11 });
+    // A clip placed at 6 s: exporting 10-12 s needs source 4-6 s.
+    doc.clips.push(defaultClip({ kind: 'video', assetId: 'b', trackId: track, start: 6, duration: 10 }));
+    expect(assetSourceSpan(doc, 'b', 10, 12)).toEqual({ start: 4, end: 6 });
+    // Reverse and playback rate are honoured.
+    doc.clips.push(defaultClip({ kind: 'video', assetId: 'c', trackId: track, start: 0, duration: 4, reverse: true, playbackRate: 2 }));
+    expect(assetSourceSpan(doc, 'c', 0, 1)).toEqual({ start: 6, end: 8 });
+    // A clip inside a nested composition, mapped through its host clip.
+    doc.compositions.push({ id: 'comp1', name: 'Nested', composition: { ...doc.composition, duration: 10 }, tracks: [], clips: [
+      defaultClip({ kind: 'video', assetId: 'd', trackId: 't', start: 0, duration: 10, inPoint: 2 }),
+    ] });
+    doc.clips.push(defaultClip({ kind: 'nested', compositionId: 'comp1', trackId: track, start: 5, duration: 5, inPoint: 1 }));
+    expect(assetSourceSpan(doc, 'd', 5, 7)).toEqual({ start: 3, end: 5 });
+    // Not on screen in the range: nothing to extract.
+    expect(assetSourceSpan(doc, 'b', 0, 5)).toBeNull();
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -473,6 +495,45 @@ describe('effects', () => {
     expect(fullFraction).toBeGreaterThan(0.05);
     expect(Math.abs(fullFraction - halfFraction)).toBeLessThan(0.12);
     expect(fullInk).toBeGreaterThan(halfInk * 3);
+  });
+
+  it('draws pixel-sized effects at the same picture size at any render scale', () => {
+    // Pixelate blocks are declared in composition pixels: 8 units are 8 raster
+    // pixels at full resolution and 4 at half resolution. A half-size render
+    // (preview quality or a smaller export) must keep the same picture, only
+    // with fewer pixels, so its blocks change every 4 pixels, not every 16.
+    const half = gradientRaster(32, 32);
+    const out = Uint8ClampedArray.from(half);
+    runEffectPass(out, makeContext(32, 32, 0.5), 'pixelate', { ...defaultParams('pixelate'), blockSize: 8 });
+    const at = (x) => out[(16 * 32 + x) * 4];
+    expect(at(1)).toBe(at(3));
+    expect(at(4)).not.toBe(at(3));
+    expect(at(8)).not.toBe(at(7));
+
+    // Halftone: a half-size render matches the full-size render scaled down.
+    const params = { ...defaultParams('halftone'), spacing: 8, dotSize: 100 };
+    const fullOut = Uint8ClampedArray.from(gradientRaster(64, 64));
+    const halfOut = Uint8ClampedArray.from(gradientRaster(32, 32));
+    passHalftone(gradientRaster(64, 64), fullOut, makeContext(64, 64, 1), params);
+    passHalftone(gradientRaster(32, 32), halfOut, makeContext(32, 32, 0.5), params);
+    // Compare both at 8x8 (blocks of one screen cell), where the dot pattern
+    // averages out into the tone it prints.
+    const blockMeans = (data, size, cells) => {
+      const step = size / cells;
+      const means = [];
+      for (let cy = 0; cy < cells; cy += 1) {
+        for (let cx = 0; cx < cells; cx += 1) {
+          let sum = 0;
+          for (let y = cy * step; y < (cy + 1) * step; y += 1) for (let x = cx * step; x < (cx + 1) * step; x += 1) sum += data[(y * size + x) * 4];
+          means.push(sum / (step * step));
+        }
+      }
+      return means;
+    };
+    const a = blockMeans(fullOut, 64, 8);
+    const b = blockMeans(halfOut, 32, 8);
+    const meanDiff = a.reduce((total, value, index) => total + Math.abs(value - b[index]), 0) / a.length;
+    expect(meanDiff).toBeLessThan(20);
   });
 
   it('leaves the raster untouched for a neutral pass', () => {

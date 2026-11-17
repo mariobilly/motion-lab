@@ -39,6 +39,7 @@ import {
   readWav, run, writeWav, writeZip,
 } from './media.js';
 import { directorySize, readJson as readJsonFile, removeTree, safeStem } from './workspace.js';
+import { assetSourceSpan } from '../core/schema.js';
 
 /**
  * @typedef {import('./workspace.js').Workspace} Workspace
@@ -197,8 +198,14 @@ export async function runExport({ workspace, baseUrl, doc, job, options }) {
     await fs.mkdir(assetDir, { recursive: true });
 
     /* ---------------- asset preparation ---------------- */
+    // Stills can sit anywhere on the timeline, so their media covers the times they show.
+    const stillTimes = options.kind === 'stills' && Array.isArray(options.items) && options.items.length > 0
+      ? options.items.map((item) => Math.max(0, Math.min(composition.duration, Number(item.time) || 0)))
+      : options.kind === 'still' ? [Math.max(0, Math.min(rangeEnd, options.time ?? rangeStart))] : null;
     const assetMap = await prepareAssets({
-      workspace, doc, assetDir, videoDir, fps, rangeStart, rangeEnd, job, warnings, tools,
+      workspace, doc, assetDir, videoDir, fps, job, warnings, tools,
+      rangeStart: stillTimes ? Math.min(...stillTimes) : rangeStart,
+      rangeEnd: stillTimes ? Math.max(...stillTimes) : rangeEnd,
     });
 
     /* ---------------- modulation curves + audio mix ---------------- */
@@ -537,12 +544,18 @@ async function prepareAssets({ workspace, doc, assetDir, videoDir, fps, rangeSta
     job.progress = 0;
 
     if (asset.kind === 'video') {
+      // Frames follow the clips' own source time (trim, reverse, playback rate),
+      // not the export's timeline range, with a second either side for effects
+      // that look back or ahead in time.
+      const span = assetSourceSpan(doc, asset.id, rangeStart, rangeEnd);
+      if (!span) continue;
+      const startTime = Math.max(0, span.start - 1);
       const target = join(videoDir, asset.id);
       const frames = Math.max(1, Math.ceil((rangeEnd - rangeStart) * fps) + 4);
       const probe = await probeMedia(tools, original);
       const result = await extractVideoFrames(tools, original, target, {
-        startTime: rangeStart,
-        duration: (rangeEnd - rangeStart) + 2,
+        startTime,
+        duration: (span.end - startTime) + 1,
         fps,
         width: probe.width || asset.width || 1920,
         height: probe.height || asset.height || 1080,
@@ -555,7 +568,7 @@ async function prepareAssets({ workspace, doc, assetDir, videoDir, fps, rangeSta
       map[asset.id] = {
         kind: 'video-sequence',
         url: `/api/exports/${job.id}/video/${asset.id}/f%06d.png`,
-        startTime: rangeStart,
+        startTime,
         fps,
         frameCount: result.frames,
         width: probe.width || asset.width || 1920,

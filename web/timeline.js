@@ -936,6 +936,7 @@ export class Timeline {
       if (data.files && data.files.length > 0 && !data.types.includes('application/x-motion-lab-asset')) {
         event.preventDefault();
         const assets = await this.media.importFiles([...data.files]);
+        if (assets.length > 0 && hit?.kind === 'clip' && this.store.fillMediaSlot(hit.clip.id, assets[0])) return;
         if (assets.length > 0 && hit?.kind === 'empty') this.placeAsset(assets[0], hit.trackId, hit.time);
         return;
       }
@@ -950,6 +951,8 @@ export class Timeline {
       if (assetId) {
         const asset = this.store.doc.assets.find((entry) => entry.id === assetId) ?? this.store.assets.get(assetId);
         if (!asset) return;
+        // Dropped on an empty media slot (a starter's "drop media here" clip): fill it.
+        if (hit?.kind === 'clip' && this.store.fillMediaSlot(hit.clip.id, asset)) return;
         this.placeAsset(asset, trackId, time);
         return;
       }

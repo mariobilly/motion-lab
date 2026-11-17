@@ -18,6 +18,26 @@ import { api, assetAudioUrl, assetFileUrl, assetFrameUrl, assetPreviewUrl } from
 import { analyzeAudio } from '/core/audioAnalysis.js';
 import { storeAnalysis } from '/core/audio.js';
 
+/** Seconds a playing video element may drift from the playhead before it is re-seeked. */
+const PLAYBACK_DRIFT = 0.15;
+
+/** The last frame each video element showed, kept while a seek is loading. @type {WeakMap<HTMLVideoElement, HTMLCanvasElement>} */
+const lastFrames = new WeakMap();
+
+/** @param {HTMLVideoElement} video */
+function rememberFrame(video) {
+  let canvas = lastFrames.get(video);
+  if (!canvas) {
+    canvas = document.createElement('canvas');
+    lastFrames.set(video, canvas);
+  }
+  if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+  }
+  canvas.getContext('2d')?.drawImage(video, 0, 0);
+}
+
 /** @typedef {import('/core/schema.js').AssetMeta} AssetMeta */
 
 /**
@@ -334,8 +354,11 @@ export class MediaEngine {
       },
 
       /**
-       * Returns the picture at `sourceTime`. For video this performs a seek and
-       * waits for it to land, which is what makes scrubbing reproducible.
+       * Returns the picture at `sourceTime`. While the preview plays, the video
+       * element plays along and is only re-seeked when it drifts; when it is
+       * paused or scrubbed, the exact frame is sought and drawn once the seek
+       * lands. Until then the last decoded frame stays on screen, never nothing.
+       * (Exports do not use this: they render pre-extracted frames.)
        * @param {string} assetId
        * @param {number} sourceTime
        */
@@ -349,16 +372,26 @@ export class MediaEngine {
         if (loaded.element instanceof HTMLVideoElement) {
           const video = loaded.element;
           const target = Math.max(0, Math.min(Math.max(0, (video.duration || 0) - 1e-3), sourceTime));
-          if (Math.abs(video.currentTime - target) > 1e-3) {
-            engine.pendingSeeks.set(assetId, target);
+          const playing = Boolean(engine.store.playback?.playing);
+          if (playing) {
+            const rate = engine.store.playback.rate || 1;
+            if (video.playbackRate !== rate) video.playbackRate = rate;
+            if (video.paused) video.play().catch(() => { /* drift seeks below still keep it moving */ });
+          } else if (!video.paused) {
+            video.pause();
+          }
+          if (Math.abs(video.currentTime - target) > (playing ? PLAYBACK_DRIFT : 1e-3)) {
+            if (video.readyState >= 2 && !video.seeking && video.videoWidth > 0) rememberFrame(video);
+            if (!playing) engine.pendingSeeks.set(assetId, target);
             try {
               video.currentTime = target;
             } catch {
               /* seeking before metadata is ready */
             }
-            return null;
+            video.addEventListener('seeked', () => engine.requestRender?.(), { once: true });
+            return lastFrames.get(video) ?? (video.readyState >= 2 ? video : null);
           }
-          if (video.readyState < 2) return null;
+          if (video.readyState < 2) return lastFrames.get(video) ?? null;
           return video;
         }
         return loaded.element;
@@ -452,7 +485,8 @@ export class MediaEngine {
           /* the server can still decode the original with ffmpeg */
         }
 
-        this.store.notify('ok', `"${assetId}" analysed: ${result.onsets.length} onsets, ${result.tempo || '—'} BPM${result.tempoConfidence < 0.35 ? ' (low confidence — treat the markers as suggestions)' : ''}`, { title: 'Audio ready' });
+        const assetName = this.store.assets.get(assetId)?.name ?? this.store.doc.assets.find((asset) => asset.id === assetId)?.name ?? assetId;
+        this.store.notify('ok', `"${assetName}" analysed: ${result.onsets.length} onsets, ${result.tempo || '—'} BPM${result.tempoConfidence < 0.35 ? ' (low confidence — treat the markers as suggestions)' : ''}`, { title: 'Audio ready' });
         this.store.invalidateMappings();
         this.store.markDirty();
         return stored;

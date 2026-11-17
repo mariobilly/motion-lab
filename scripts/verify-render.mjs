@@ -16,6 +16,10 @@
  *                              full-resolution one: quality changes the raster,
  *                              never the timing or the composition
  *   9  PNG sequence, project package and cancellation
+ *  10  export size and trimmed clips: a half-size export is the full-size one
+ *      scaled down, and a clip with an in-point exports its own source frames
+ *  11  proportions: a photo or video whose shape differs from the composition's
+ *      is cover-fitted (cropped to fill), never stretched
  *
  * Usage: node scripts/verify-render.mjs [--port 5391]
  */
@@ -27,6 +31,7 @@ import { fileURLToPath } from 'node:url';
 
 import { BrowserPage, findBrowser, findFreePort, sleep } from '../server/cdp.js';
 import { probeTools, run } from '../server/media.js';
+import { defaultClip } from '../core/schema.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -612,8 +617,123 @@ async function main() {
     check('sequence metadata describes the range', info.width === 540 && info.fps === 30 && info.frames === 30, `${info.width}x${info.height} @ ${info.fps} for ${info.frames} frames`);
   });
 
-  /* ================= 8. package + cancellation ================= */
-  await stage('8. Project package and cancellation', async () => {
+  /* ================= 8. export size and trimmed video ================= */
+  await stage('8. Export size and trimmed video clips', async () => {
+    const firstFrame = async (exportDoc, width, height, from, label) => {
+      const { job } = await api('/api/exports', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ doc: exportDoc, kind: 'png-sequence', width, height, fps: 30, rangeStart: from, rangeEnd: from + 0.1, fileName: `verify-${label}` }),
+      });
+      const result = await waitForJob(job.id);
+      if (result.status !== 'done') throw new Error(result.error ?? `${label} export failed`);
+      const entries = readZip(await fs.readFile(join(WORKSPACE, 'exports', job.id, 'out', result.outputName)));
+      const first = [...entries.keys()].filter((name) => name.endsWith('.png')).sort()[0];
+      return decodePng(page, entries.get(first));
+    };
+    // Mean colour of every size x size block: a dot screen or grain compares by
+    // the tone it prints rather than by where each dot lands.
+    const blockMeans = (image, size) => {
+      const columns = Math.floor(image.width / size);
+      const rows = Math.floor(image.height / size);
+      const means = new Float64Array(columns * rows * 3);
+      for (let y = 0; y < rows * size; y += 1) {
+        for (let x = 0; x < columns * size; x += 1) {
+          const i = (y * image.width + x) * 4;
+          const cell = (Math.floor(y / size) * columns + Math.floor(x / size)) * 3;
+          for (let c = 0; c < 3; c += 1) means[cell + c] += image.data[i + c] / (size * size);
+        }
+      }
+      return means;
+    };
+
+    // Pixel-sized effects (halftone, grain, scratches...) scale with the export
+    // size: a half-size export is the full-size picture with fewer pixels.
+    const full = await firstFrame(doc, 1080, 1920, 2, 'size-full');
+    const half = await firstFrame(doc, 540, 960, 2, 'size-half');
+    const a = blockMeans(full, 20);
+    const b = blockMeans(half, 10);
+    const blockDiff = a.reduce((total, value, index) => total + Math.abs(value - b[index]), 0) / a.length;
+    check('a half-size export is the full-size export scaled down', blockDiff < 6, `mean block difference ${blockDiff.toFixed(2)}`);
+
+    // A clip trimmed to start 4 s into its file shows source 4 s at timeline 0 s,
+    // the same picture an untrimmed clip shows at timeline 4 s.
+    const visual = doc.tracks.find((track) => track.kind === 'visual');
+    const trimmed = (inPoint) => ({
+      ...JSON.parse(JSON.stringify(doc)),
+      mappings: [],
+      clips: [defaultClip({ name: 'Harbour', kind: 'video', assetId: assetIds.harbour, trackId: visual.id, start: 0, duration: 6, inPoint })],
+    });
+    const late = await firstFrame(trimmed(4), 540, 960, 0, 'trim-in4');
+    const plain = await firstFrame(trimmed(0), 540, 960, 4, 'trim-in0');
+    const trimDiff = compare(late.data, plain.data);
+    check('a clip with an in-point exports the frames of its source time', trimDiff.mean < 1, `mean ${trimDiff.mean.toFixed(3)}, max ${trimDiff.max}`);
+  });
+
+  /* ================= 9. proportions ================= */
+  await stage('9. Photos and videos keep their proportions', async () => {
+    // Compare an exported frame, at 96 px wide, with the source drawn two ways:
+    // cover-fitted (its own proportions, filling the frame, centred) and stretched
+    // to the frame. The export must be the cover fit.
+    const fitDistances = async (exported, source) => JSON.parse(String(await page.evaluate(`(async () => {
+      const load = async (b64) => createImageBitmap(await (await fetch('data:image/png;base64,' + b64)).blob());
+      const out = await load('${exported.toString('base64')}');
+      const src = await load('${source.toString('base64')}');
+      const W = 96;
+      const H = Math.round(W * out.height / out.width);
+      const pixels = (draw) => {
+        const canvas = new OffscreenCanvas(W, H);
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingQuality = 'high';
+        draw(ctx);
+        return ctx.getImageData(0, 0, W, H).data;
+      };
+      const exported = pixels((ctx) => ctx.drawImage(out, 0, 0, W, H));
+      const s = Math.max(W / src.width, H / src.height);
+      const cover = pixels((ctx) => ctx.drawImage(src, (src.width - W / s) / 2, (src.height - H / s) / 2, W / s, H / s, 0, 0, W, H));
+      const stretch = pixels((ctx) => ctx.drawImage(src, 0, 0, W, H));
+      const diff = (a, b) => {
+        let total = 0;
+        for (let i = 0; i < a.length; i += 4) total += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+        return total / (a.length / 4 * 3);
+      };
+      return JSON.stringify({ cover: diff(exported, cover), stretch: diff(exported, stretch) });
+    })()`, { awaitPromise: true, timeoutMs: 120000 })));
+    const exportStill = async (exportDoc, time, label) => {
+      const { job } = await api('/api/exports', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ doc: exportDoc, kind: 'still', time, rangeStart: 0, rangeEnd: exportDoc.composition.duration, fileName: `verify-${label}.png` }),
+      });
+      const result = await waitForJob(job.id);
+      if (result.status !== 'done') throw new Error(result.error ?? `${label} export failed`);
+      return fs.readFile(join(WORKSPACE, 'exports', job.id, 'out', result.outputName));
+    };
+    const single = (clip, width, height) => {
+      const copy = JSON.parse(JSON.stringify(doc));
+      copy.composition = { ...copy.composition, width, height, duration: 6 };
+      copy.exportRange = { in: 0, out: 6 };
+      copy.mappings = [];
+      copy.clips = [defaultClip({ ...clip, trackId: copy.tracks.find((track) => track.kind === 'visual').id, start: 0, duration: 6 })];
+      return copy;
+    };
+
+    // A portrait photo (1600x2000) in a landscape composition.
+    const photo = await exportStill(single({ name: 'Photo', kind: 'image', assetId: assetIds.photo }, 1920, 1080), 1, 'fit-photo');
+    const photoFit = await fitDistances(photo, await fs.readFile(join(sampleDir, 'photo-dusk.png')));
+    check('a portrait photo in a landscape composition is cover-fitted, not stretched', photoFit.cover < 10 && photoFit.cover * 2 < photoFit.stretch, `cover ${photoFit.cover.toFixed(1)}, stretched ${photoFit.stretch.toFixed(1)}`);
+
+    // A landscape video (1280x720) in a portrait composition, against its own frame at 2 s.
+    const frameFile = join(WORKSPACE, 'exports', 'verify-fit-frame.png');
+    await run(tools.ffmpegPath, ['-v', 'error', '-y', '-ss', '2', '-i', join(sampleDir, 'clip-harbour.mp4'), '-frames:v', '1', frameFile]);
+    const video = await exportStill(single({ name: 'Video', kind: 'video', assetId: assetIds.harbour }, 1080, 1920), 2, 'fit-video');
+    const videoFit = await fitDistances(video, await fs.readFile(frameFile));
+    await fs.rm(frameFile, { force: true });
+    check('a landscape video in a portrait composition is cover-fitted, not stretched', videoFit.cover < 10 && videoFit.cover * 2 < videoFit.stretch, `cover ${videoFit.cover.toFixed(1)}, stretched ${videoFit.stretch.toFixed(1)}`);
+  });
+
+  /* ================= 10. package + cancellation ================= */
+  await stage('10. Project package and cancellation', async () => {
     const { job } = await api(`/api/projects/${projectId}/package`, { method: 'POST' });
     const packaged = await waitForJob(job.id);
     check('project package finished', packaged.status === 'done', packaged.error ?? packaged.outputName);

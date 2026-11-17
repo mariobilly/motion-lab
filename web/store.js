@@ -446,6 +446,27 @@ export class Store {
   }
 
   /**
+   * Put a photo or video into an empty media slot (a starter project's "drop media
+   * here" clip). The clip keeps its timing, effects, masks and keyframes.
+   * @param {string} clipId
+   * @param {import('/core/schema.js').AssetMeta} asset
+   * @returns {boolean} false when the clip is not an empty visual slot or the file is not a picture
+   */
+  fillMediaSlot(clipId, asset) {
+    const clip = this.doc.clips.find((entry) => entry.id === clipId);
+    const visual = (/** @type {string} */ kind) => kind === 'image' || kind === 'video';
+    if (!clip || clip.assetId || !visual(clip.kind) || !asset || !visual(asset.kind)) return false;
+    if (!this.doc.assets.some((entry) => entry.id === asset.id)) this.registerAsset(asset);
+    this.edit('Fill media slot', () => {
+      clip.kind = asset.kind;
+      clip.assetId = asset.id;
+      if (/\(drop media here\)$/.test(clip.name)) clip.name = asset.name;
+    });
+    this.selectClips([clip.id]);
+    return true;
+  }
+
+  /**
    * @param {string} kind
    * @returns {Track|undefined}
    */
